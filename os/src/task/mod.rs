@@ -14,12 +14,13 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{TaskControlBlock, TaskStatus, TaskInfo};
+use crate::timer::get_time_ms;
 
 pub use context::TaskContext;
 
@@ -54,6 +55,11 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_info: TaskInfo {
+                status: TaskStatus::UnInit,
+                syscall_times: [0; MAX_SYSCALL_NUM],
+                time: 0
+            }
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +141,24 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    // set syscall times for current task
+    fn set_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task_id = inner.current_task;
+        inner.tasks[current_task_id].task_info.syscall_times[syscall_id] += 1;
+    }
+
+    // pass task info to the pointer
+    fn get_task_info(&self, _ti: *mut TaskInfo) {
+        let inner = self.inner.exclusive_access();
+        let current_id = inner.current_task;
+        unsafe {
+            (*_ti).status = TaskStatus::Running;
+            (*_ti).syscall_times = inner.tasks[current_id].task_info.syscall_times;
+            (*_ti).time = get_time_ms() - inner.tasks[current_id].task_info.time;
+        }
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +192,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// set syscall times for current task
+pub fn set_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.set_syscall_times(syscall_id);
+}
+
+/// pass task info to the pointer
+pub fn get_task_info(_ti: *mut TaskInfo) {
+    TASK_MANAGER.get_task_info(_ti);
 }
